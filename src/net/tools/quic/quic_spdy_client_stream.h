@@ -62,6 +62,10 @@ class QuicSpdyClientStream : public QuicSpdyStream {
 
   int response_code() const { return response_code_; }
 
+  int GetAddr() const { return fd_; }
+
+  void SetAddr(int fd) { fd_ = fd; }
+
   // While the server's SetPriority shouldn't be called externally, the creator
   // of client-side streams should be able to set the priority.
   using QuicSpdyStream::SetPriority;
@@ -84,6 +88,8 @@ class QuicSpdyClientStream : public QuicSpdyStream {
   // Expect: 100-continue.
   bool has_preliminary_headers_;
   SpdyHeaderBlock preliminary_headers_;
+
+  int fd_;
 
   DISALLOW_COPY_AND_ASSIGN(QuicSpdyClientStream);
 };

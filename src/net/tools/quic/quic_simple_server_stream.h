@@ -6,6 +6,8 @@
 #define NET_TOOLS_QUIC_QUIC_SIMPLE_SERVER_STREAM_H_
 
 #include <string>
+#include <arpa/inet.h>
+#include <sys/epoll.h> 
 
 #include "base/macros.h"
 #include "net/quic/core/quic_packets.h"
@@ -74,6 +76,9 @@ class QuicSimpleServerStream : public QuicSpdyServerStreamBase {
 
   const std::string& body() { return body_; }
 
+
+  int proxy();
+
  private:
   friend class test::QuicSimpleServerStreamPeer;
 
@@ -81,10 +86,16 @@ class QuicSimpleServerStream : public QuicSpdyServerStreamBase {
   SpdyHeaderBlock request_headers_;
   int64_t content_length_;
   std::string body_;
+  //added by blitzhong
+  //2017-10-15
+  std::string respon_body;
 
   QuicHttpResponseCache* response_cache_;  // Not owned.
 
   DISALLOW_COPY_AND_ASSIGN(QuicSimpleServerStream);
+
+  int clientSocket;
+
 };
 
 }  // namespace net

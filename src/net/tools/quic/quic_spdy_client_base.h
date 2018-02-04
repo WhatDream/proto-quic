@@ -134,6 +134,10 @@ class QuicSpdyClientBase : public QuicClientBase,
     response_listener_ = std::move(listener);
   }
 
+  int GetAddr() const { return fd_; }
+
+  void SetAddr(int fd) { fd_ = fd; }
+
  protected:
   int GetNumSentClientHellosFromSession() override;
   int GetNumReceivedServerConfigUpdatesFromSession() override;
@@ -206,6 +210,8 @@ class QuicSpdyClientBase : public QuicClientBase,
   std::vector<std::unique_ptr<QuicDataToResend>> data_to_resend_on_connect_;
 
   std::unique_ptr<ClientQuicDataToResend> push_promise_data_to_resend_;
+
+  int fd_;
 
   DISALLOW_COPY_AND_ASSIGN(QuicSpdyClientBase);
 };

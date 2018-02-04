@@ -39,6 +39,19 @@
 //   quic_client http://www.example.com --host=${IP}
 
 #include <iostream>
+#include <queue> 
+#include <arpa/inet.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/epoll.h>
+#include <errno.h>
 
 #include "base/at_exit.h"
 #include "base/command_line.h"
@@ -134,7 +147,91 @@ class FakeProofVerifier : public ProofVerifier {
   }
 };
 
+
+//added by blitzhong
+//2017-10-23
+
+typedef struct _connector
+{
+  int fd;
+  net::QuicSimpleClient *client;
+} connector;
+
+#define MAXEVENTS 1024
+
+static int
+make_socket_non_blocking (int sfd)
+{
+  int flags, s;
+
+  flags = fcntl (sfd, F_GETFL, 0);
+  if (flags == -1)
+    {
+      perror ("fcntl");
+      return -1;
+    }
+
+  flags |= O_NONBLOCK;
+  s = fcntl (sfd, F_SETFL, flags);
+  if (s == -1)
+    {
+      perror ("fcntl");
+      return -1;
+    }
+
+  return 0;
+}
+
+static int
+create_and_bind (char *port)
+{
+  struct addrinfo hints;
+  struct addrinfo *result, *rp;
+  int s, sfd;
+
+  memset (&hints, 0, sizeof (struct addrinfo));
+  hints.ai_family = AF_UNSPEC;     /* Return IPv4 and IPv6 choices */
+  hints.ai_socktype = SOCK_STREAM; /* We want a TCP socket */
+  hints.ai_flags = AI_PASSIVE;     /* All interfaces */
+
+  s = getaddrinfo (NULL, port, &hints, &result);
+  if (s != 0)
+  {
+      fprintf (stderr, "getaddrinfo: %s\n", gai_strerror (s));
+      return -1;
+  }
+
+  for (rp = result; rp != NULL; rp = rp->ai_next)
+    {
+      sfd = socket (rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+      if (sfd == -1)
+        continue;
+
+      s = bind (sfd, rp->ai_addr, rp->ai_addrlen);
+      if (s == 0)
+        {
+          /* We managed to bind successfully! */
+          break;
+        }
+
+      close (sfd);
+    }
+
+  if (rp == NULL)
+    {
+      fprintf (stderr, "Could not bind\n");
+      return -1;
+    }
+
+  freeaddrinfo (result);
+
+  return sfd;
+}
+
+
+
 int main(int argc, char* argv[]) {
+
   base::CommandLine::Init(argc, argv);
   base::CommandLine* line = base::CommandLine::ForCurrentProcess();
   const base::CommandLine::StringVector& urls = line->GetArgs();
@@ -211,6 +308,7 @@ int main(int argc, char* argv[]) {
     }
   }
 
+
   VLOG(1) << "server host: " << FLAGS_host << " port: " << FLAGS_port
           << " body: " << FLAGS_body << " headers: " << FLAGS_headers
           << " quiet: " << FLAGS_quiet
@@ -250,7 +348,7 @@ int main(int argc, char* argv[]) {
   VLOG(1) << "Resolved " << host << " to " << host_port << endl;
 
   // Build the client, and try to connect.
-  net::QuicServerId server_id(url.host(), url.EffectiveIntPort(),
+  /*net::QuicServerId server_id(url.host(), url.EffectiveIntPort(),
                               net::PRIVACY_MODE_DISABLED);
   net::QuicVersionVector versions = net::AllSupportedVersions();
   if (FLAGS_quic_version != -1) {
@@ -272,6 +370,7 @@ int main(int argc, char* argv[]) {
         cert_verifier.get(), ct_policy_enforcer.get(),
         transport_security_state.get(), ct_verifier.get()));
   }
+
   net::QuicSimpleClient client(net::QuicSocketAddress(ip_addr, port), server_id,
                                versions, std::move(proof_verifier));
   client.set_initial_max_packet_length(
@@ -321,50 +420,331 @@ int main(int argc, char* argv[]) {
   }
 
   // Make sure to store the response, for later output.
-  client.set_store_response(true);
+  client.set_store_response(true);*/
 
-  // Send the request.
-  client.SendRequestAndWaitForResponse(header_block, body, /*fin=*/true);
+  //added by blitzhong
+  //2017-10-23
+  char proxy_port[10] ="6789";
 
-  // Print request and response details.
-  if (!FLAGS_quiet) {
-    cout << "Request:" << endl;
-    cout << "headers:" << header_block.DebugString();
-    if (!FLAGS_body_hex.empty()) {
-      // Print the user provided hex, rather than binary body.
-      cout << "body:\n"
-           << QuicTextUtils::HexDump(QuicTextUtils::HexDecode(FLAGS_body_hex))
-           << endl;
-    } else {
-      cout << "body: " << body << endl;
+  int sfd, s;
+  int efd;
+  struct epoll_event event;
+  struct epoll_event *events;
+  net::QuicSimpleClient **head_client;
+
+  sfd = create_and_bind (proxy_port);
+  if (sfd == -1)
+    abort ();
+
+  s = make_socket_non_blocking (sfd);
+  if (s == -1)
+    abort ();
+
+  s = listen (sfd, SOMAXCONN);
+  if (s == -1)
+    {
+      perror ("listen");
+      abort ();
     }
-    cout << endl;
-    cout << "Response:" << endl;
-    cout << "headers: " << client.latest_response_headers() << endl;
-    string response_body = client.latest_response_body();
-    if (!FLAGS_body_hex.empty()) {
-      // Assume response is binary data.
-      cout << "body:\n" << QuicTextUtils::HexDump(response_body) << endl;
-    } else {
-      cout << "body: " << response_body << endl;
+
+  efd = epoll_create1 (0);
+  if (efd == -1)
+    {
+      perror ("epoll_create");
+      abort ();
     }
-    cout << "trailers: " << client.latest_response_trailers() << endl;
+
+  event.data.fd = sfd;
+  event.events = EPOLLIN | EPOLLET;
+  s = epoll_ctl (efd, EPOLL_CTL_ADD, sfd, &event);
+  if (s == -1)
+    {
+      perror ("epoll_ctl");
+      abort ();
+    }
+
+  /* Buffer where events are returned */
+  events = (struct epoll_event *) calloc (MAXEVENTS, sizeof event);
+  head_client = new net::QuicSimpleClient *[MAXEVENTS];
+  memset(head_client, 0, MAXEVENTS * sizeof(net::QuicSimpleClient *));
+
+  /* The event loop */
+  while (1)
+  {
+        int n, i;
+
+        n = epoll_wait (efd, events, MAXEVENTS, 1000);
+        for (i = 0; i < n; i++)
+        {
+          if ((events[i].events & EPOLLERR) ||
+                (events[i].events & EPOLLHUP) ||
+                (!(events[i].events & EPOLLIN)))
+          {
+                /* An error has occured on this fd, or the socket is not
+                   ready for reading (why were we notified then?) */
+            fprintf (stderr, "epoll error\n");
+            close (events[i].data.fd);
+            continue;
+          }
+
+          else if (sfd == events[i].data.fd)
+          {
+                /* We have a notification on the listening socket, which
+                   means one or more incoming connections. */
+                while (1)
+                {
+                    struct sockaddr in_addr;
+                    socklen_t in_len;
+                    int infd;
+
+                    in_len = sizeof in_addr;
+                    infd = accept (sfd, &in_addr, &in_len);
+                    if (infd == -1)
+                    {
+                        if ((errno == EAGAIN) ||
+                            (errno == EWOULDBLOCK))
+                        {
+                          /* We have processed all incoming
+                             connections. */
+                          break;
+                        }
+                        else
+                        {
+                          perror ("accept");
+                          break;
+                        }
+                    }
+		printf("accept a new connection, fd=%d\n", infd);
+
+
+  // Build the client, and try to connect.
+  net::QuicServerId server_id(url.host(), url.EffectiveIntPort(),
+                              net::PRIVACY_MODE_DISABLED);
+  net::QuicVersionVector versions = net::AllSupportedVersions();
+  if (FLAGS_quic_version != -1) {
+    versions.clear();
+    versions.push_back(static_cast<net::QuicVersion>(FLAGS_quic_version));
+  }
+  // For secure QUIC we need to verify the cert chain.
+  std::unique_ptr<CertVerifier> cert_verifier(CertVerifier::CreateDefault());
+  std::unique_ptr<TransportSecurityState> transport_security_state(
+      new TransportSecurityState);
+  std::unique_ptr<MultiLogCTVerifier> ct_verifier(new MultiLogCTVerifier());
+  ct_verifier->AddLogs(net::ct::CreateLogVerifiersForKnownLogs());
+  std::unique_ptr<CTPolicyEnforcer> ct_policy_enforcer(new CTPolicyEnforcer());
+  std::unique_ptr<ProofVerifier> proof_verifier;
+  if (line->HasSwitch("disable-certificate-verification")) {
+    proof_verifier.reset(new FakeProofVerifier());
+  } else {
+    proof_verifier.reset(new ProofVerifierChromium(
+        cert_verifier.get(), ct_policy_enforcer.get(),
+        transport_security_state.get(), ct_verifier.get()));
   }
 
-  size_t response_code = client.latest_response_code();
-  if (response_code >= 200 && response_code < 300) {
-    cout << "Request succeeded (" << response_code << ")." << endl;
-    return 0;
-  } else if (response_code >= 300 && response_code < 400) {
-    if (FLAGS_redirect_is_success) {
-      cout << "Request succeeded (redirect " << response_code << ")." << endl;
-      return 0;
-    } else {
-      cout << "Request failed (redirect " << response_code << ")." << endl;
-      return 1;
-    }
-  } else {
-    cerr << "Request failed (" << response_code << ")." << endl;
+  net::QuicSimpleClient *client = new net::QuicSimpleClient(net::QuicSocketAddress(ip_addr, port), server_id,
+                               versions, std::move(proof_verifier));
+  client->set_initial_max_packet_length(
+      FLAGS_initial_mtu != 0 ? FLAGS_initial_mtu : net::kDefaultMaxPacketSize);
+  if (!client->Initialize()) {
+    cerr << "Failed to initialize client." << endl;
     return 1;
   }
+  if (!client->Connect()) {
+    net::QuicErrorCode error = client->session()->error();
+    if (FLAGS_version_mismatch_ok && error == net::QUIC_INVALID_VERSION) {
+      cout << "Server talks QUIC, but none of the versions supported by "
+           << "this client: " << QuicVersionVectorToString(versions) << endl;
+      // Version mismatch is not deemed a failure.
+      return 0;
+    }
+    cerr << "Failed to connect to " << host_port
+         << ". Error: " << net::QuicErrorCodeToString(error) << endl;
+    return 1;
+  }
+  cout << "Connected to " << host_port << endl;
+
+  // Make sure to store the response, for later output.
+  client->set_store_response(true);
+
+  head_client[infd] = client;
+
+
+                    /* Make the incoming socket non-blocking and add it to the
+                       list of fds to monitor. */
+                    s = make_socket_non_blocking (infd);
+                    if (s == -1)
+                      abort ();
+
+                    event.data.fd = infd;
+                    event.events = EPOLLIN | EPOLLET;
+                    s = epoll_ctl (efd, EPOLL_CTL_ADD, infd, &event);
+                    if (s == -1)
+                    {
+                        perror ("epoll_ctl");
+                        abort ();
+                    }
+                  }
+
+                  continue;
+            }
+            else
+            {
+                /* We have data on the fd waiting to be read. Read and
+                   display it. We must read whatever data is available
+                   completely, as we are running in edge-triggered mode
+                   and won't get a notification again for the same
+                   data. */
+                int done = 0;
+
+                while (1)
+                {
+                    ssize_t count;
+                    char buf[8192];
+
+                    count = read (events[i].data.fd, buf, sizeof(buf));
+                    if (count == -1)
+                    {
+                        /* If errno == EAGAIN, that means we have read all
+                           data. So go back to the main loop. */
+                        if (errno != EAGAIN)
+                        {
+                            perror ("read");
+                            done = 1;
+                        }
+                        break;
+                    }
+                    else if (count == 0)
+                    {
+                        /* End of file. The remote has closed the
+                           connection. */
+                        done = 1;
+                        break;
+                    }
+
+  // Construct the string body from flags, if provided.
+  string body = FLAGS_body;
+  if (!FLAGS_body_hex.empty()) {
+    DCHECK(FLAGS_body.empty()) << "Only set one of --body and --body_hex.";
+    body = QuicTextUtils::HexDecode(FLAGS_body_hex);
+  }
+
+  // Construct a GET or POST request for supplied URL.
+  SpdyHeaderBlock header_block;
+  header_block[":method"] = body.empty() ? "GET" : "POST";
+  header_block[":scheme"] = url.scheme();
+  header_block[":authority"] = url.host();
+  header_block[":path"] = url.path();
+
+  // Append any additional headers supplied on the command line.
+  for (QuicStringPiece sp : QuicTextUtils::Split(FLAGS_headers, ';')) {
+    QuicTextUtils::RemoveLeadingAndTrailingWhitespace(&sp);
+    if (sp.empty()) {
+      continue;
+    }
+    std::vector<QuicStringPiece> kv = QuicTextUtils::Split(sp, ':');
+    QuicTextUtils::RemoveLeadingAndTrailingWhitespace(&kv[0]);
+    QuicTextUtils::RemoveLeadingAndTrailingWhitespace(&kv[1]);
+    header_block[kv[0]] = kv[1];
+  }
+
+                    body = buf;
+
+                    // Send the request.
+
+                    if(!head_client[events[i].data.fd]) 
+                    {
+                      fprintf(stderr, "error in loop");
+                      break;
+                    }
+                    head_client[events[i].data.fd]->SetAddr(events[i].data.fd);
+                    head_client[events[i].data.fd]->SendRequest(header_block, body, /*fin=*/true);
+                    //client.SendRequestAndWaitForResponse(header_block, body, /*fin=*/true);
+
+
+                    //sleep(10);
+
+                    // Print request and response details.
+                    /*if (!FLAGS_quiet) {
+                      cout << "Request:" << endl;
+                      cout << "headers:" << header_block.DebugString();
+                      if (!FLAGS_body_hex.empty()) {
+                        // Print the user provided hex, rather than binary body.
+                        cout << "body:\n"
+                             << QuicTextUtils::HexDump(QuicTextUtils::HexDecode(FLAGS_body_hex))
+                             << endl;
+                      } else {
+                        cout << "body: " << body << endl;
+                      }
+                      cout << endl;
+                      cout << "Response:" << endl;
+                      cout << "headers: " << client.latest_response_headers() << endl;
+                      string response_body = client.latest_response_body();
+                      
+                      send(events[i].data.fd, response_body.c_str(),response_body.length(), 0);
+
+                      if (!FLAGS_body_hex.empty()) {
+                        // Assume response is binary data.
+                        cout << "body:\n" << QuicTextUtils::HexDump(response_body) << endl;
+                      } else {
+                        cout << "body: " << response_body << endl;
+                      }
+                      cout << "trailers: " << client.latest_response_trailers() << endl;
+                    }
+
+                    size_t response_code = client.latest_response_code();
+                    if (response_code >= 200 && response_code < 300) {
+                      cout << "Request succeeded (" << response_code << ")." << endl;
+                      //return 0;
+                    } else if (response_code >= 300 && response_code < 400) {
+                      if (FLAGS_redirect_is_success) {
+                        cout << "Request succeeded (redirect " << response_code << ")." << endl;
+                        return 0;
+                      } else {
+                        cout << "Request failed (redirect " << response_code << ")." << endl;
+                        return 1;
+                      }
+                    } else {
+                      cerr << "Request failed (" << response_code << ")." << endl;
+                      return 1;
+                    }*/
+
+                    /* Write the buffer to standard output */
+                    /*s = write (1, buf, count);
+                    if (s == -1)
+                    {
+                        perror ("write");
+                        abort ();
+                    }*/
+                }
+                if (done)
+                {
+                    delete head_client[events[i].data.fd];
+                    head_client[events[i].data.fd] = NULL;
+                    printf ("Closed connection on descriptor %d\n",
+                            events[i].data.fd);
+                    /* Closing the descriptor will make epoll remove it
+                       from the set of descriptors which are monitored. */
+                    close (events[i].data.fd);
+                }
+            }
+        }
+        for (i = 0; i < MAXEVENTS; i++)
+        {
+            if(head_client[events[i].data.fd])
+            {
+              if (!head_client[events[i].data.fd]->WaitForEvents()) {
+              }
+            }
+         }
+    }
+
+    for (auto i = 0; i < MAXEVENTS; i++)
+    {
+      if(head_client[events[i].data.fd])
+        free(head_client[events[i].data.fd]);
+    }
+    free (events);
+    close (sfd);
+
+  return 0;
 }

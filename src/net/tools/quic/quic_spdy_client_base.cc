@@ -73,6 +73,15 @@ void QuicSpdyClientBase::OnClose(QuicSpdyStream* stream) {
     response_listener_->OnCompleteResponse(stream->id(), response_headers,
                                            client_stream->data());
   }
+	
+  //add by blitzhong
+  auto fd = client_stream->GetAddr();
+  int n, m, len = client_stream->data().length();
+  const char *start = client_stream->data().c_str();
+  n = 0, m = len;
+  while((n = send(fd, start+len-m, m, 0)) > 0) {
+    m -= n;
+  }
 
   // Store response headers and body.
   if (store_response_) {
@@ -113,10 +122,12 @@ void QuicSpdyClientBase::SendRequest(const SpdyHeaderBlock& headers,
   }
 
   QuicSpdyClientStream* stream = CreateClientStream();
+  stream->SetAddr(fd_);
   if (stream == nullptr) {
     QUIC_BUG << "stream creation failed!";
     return;
   }
+
   stream->SendRequest(headers.Clone(), body, fin);
   // Record this in case we need to resend.
   MaybeAddDataToResend(headers, body, fin);
